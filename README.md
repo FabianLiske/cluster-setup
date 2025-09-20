@@ -1,0 +1,472 @@
+# 1) Für alle Nodes
+
+## 1.1) Init
+
+```bash
+sudo apt update && sudo apt full-upgrade -y
+sudo apt install -y kitty-terminfo
+sudo timedatectl set-timezone Europe/Berlin
+```
+
+## 1.2) Swap deaktivieren
+
+```bash
+sudo swapoff -a
+sudo sed -i 's/^\([^#].*swap\)/#\1/' /etc/fstab
+```
+
+## 1.3) K8s Module & Sysctls
+
+```bash
+echo -e "overlay\nbr_netfilter" | sudo tee /etc/modules-load.d/k8s.conf
+sudo modprobe overlay && sudo modprobe br_netfilter
+```
+
+```bash
+sudo nano /etc/sysctl.d/99-kubernetes.conf
+```
+
+```yaml
+net.bridge.bridge-nf-call-iptables=1
+net.ipv4.ip_forward=1
+net.ipv6.conf.all.forwarding=1
+net.ipv4.conf.all.rp_filter=2
+net.ipv4.conf.default.rp_filter=2
+```
+
+```bash
+sudo sysctl --system
+```
+
+## 1.4) Longhorn Vorbereitung
+
+```bash
+sudo apt install -y open-iscsi nfs-common smartmontools
+sudo systemctl enable --now iscsid
+```
+
+---
+
+# 2) Control Plane Nodes
+
+## 2.1) K3s auf cp-1
+
+```bash
+curl -sfL https://get.k3s.io | \
+  INSTALL_K3S_EXEC="server \
+    --cluster-init \
+    --disable traefik \
+    --disable servicelb \
+    --tls-san 192.168.100.100 \
+    --tls-san api.cluster.rohrbom.be" \
+  sh -
+
+sudo cat /var/lib/rancher/k3s/server/node-token
+```
+
+## 2.2) Alle weiteren Control Plane Nodes
+
+```bash
+curl -sfL https://get.k3s.io | \
+  K3S_TOKEN="<TOKEN>" \
+  INSTALL_K3S_EXEC="server \
+    --server https://192.168.100.11:6443 \
+    --disable traefik \
+    --disable servicelb \
+    --tls-san 192.168.100.100 \
+    --tls-san api.cluster.rohrbom.be" \
+  sh -
+```
+
+---
+
+# 3) KubeVIP für externen Zugriff auf Cluster
+
+## 3.1) DNS für API
+
+api.cluster.rohrbom.be -> 192.168.100.100 in Cloudflare ohne Proxy
+
+## 3.2) KubeVIP über cp-1 auf Cluster bringen
+
+```bash
+sudo kubectl apply -f kube-vip/kube-vip.yaml
+```
+
+Steps zum prüfen [hier](kube-vip/kubevip-guide.md)
+
+---
+
+# 4) Vorbereitung auf Admin-PC
+
+## 4.1) Installation
+
+```bash
+sudo pacman -S kubectl
+yay -S helm
+```
+
+## 4.2) Kubeconfig holen & auf VIP/FQDN umstellen
+
+```bash
+scp faba@cp-1:/etc/rancher/k3s/k3s.yaml ~/.kube/config
+chmod 600 ~/.kube/config
+# VIP/FQDN eintragen (eine von beiden Varianten):
+# sed -i 's#server: https://.*:6443#server: https://192.168.100.100:6443#' ~/.kube/config
+sed -i 's#server: https://.*:6443#server: https://api.cluster.rohrbom.be:6443#' ~/.kube/config
+kubectl get nodes
+```
+
+---
+
+# 5) Worker dem Cluster joinen
+
+## 5.1) Token von `cp-1` holen:
+
+```bash
+# auf cp-1:
+sudo cat /var/lib/rancher/k3s/server/node-token
+```
+
+## 5.2) Auf **jedem Worker** (Token einsetzen):
+
+```bash
+curl -sfL https://get.k3s.io | \
+  K3S_TOKEN="<TOKEN>" \
+  INSTALL_K3S_EXEC="agent --server https://192.168.100.100:6443" \
+  sh -
+```
+
+Check:
+
+```bash
+kubectl get nodes -o wide
+```
+
+---
+
+# 6) Longhorn installieren (ab hier wieder alles auf Admin-PC)
+
+## 6.1) Control Plane tainten
+
+```bash
+kubectl taint nodes cp-X node-role.kubernetes.io/control-plane=:NoSchedule --overwrite
+```
+
+## 6.2) Worker tainten
+
+```bash
+kubectl label nodes wk-X node-role.kubernetes.io/worker= longhorn=storage --overwrite
+```
+
+## 6.3) Longhorn per Helm installieren
+
+```bash
+helm repo add longhorn https://charts.longhorn.io
+helm repo update
+helm install longhorn longhorn/longhorn -n longhorn-system --create-namespace
+```
+
+## 6.4) StorageClass (2 Repliken, Default)
+
+```bash
+kubectl apply -f longhorn/longhorn.yaml
+```
+
+---
+
+# 7) MetalLB (Service-IPs)
+
+Mein DHCP vergibt `.200–.250`, Reservierungen liegen bei `.11–.13` & `.21–.23`, VIP ist `.100`, daher **`.151–.199`** als LB-Pool.
+
+```bash
+kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.15.2/config/manifests/metallb-native.yaml
+kubectl apply -f metallb/metallb.yaml
+```
+
+---
+
+# 8) Ingress Controller (NGINX) – für Web-Apps
+
+```bash
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+helm install ingress ingress-nginx/ingress-nginx \
+  -n ingress-nginx --create-namespace \
+  --set controller.service.type=LoadBalancer
+```
+
+Erhält eine IP aus `192.168.100.151–199`.
+Test:
+```bash
+kubectl -n ingress-nginx get svc ingress-ingress-nginx-controller -o wide
+```
+
+---
+
+# 9) Longhorn Web UI
+
+## 9.1) DNS für Longhorn
+
+longhorn.cluster.rohrbom.be -> 192.168.100.151 in Cloudflare ohne Proxy
+
+## 9.2) cert-manager via Helm
+
+```bash
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml
+kubectl -n cert-manager get pods
+```
+
+## 9.3) Cloudflare Token als Secret
+
+```bash
+kubectl apply -f certmanager/cf-secret.yaml
+```
+
+## 9.4) Cert Issuer
+
+```bash
+kubectl apply -f certmanager/issuer.yaml
+```
+
+## 9.5) Longhorn Ingress
+
+```bash
+kubectl apply -f longhorn/longhorn-ui.yaml
+```
+
+## 9.6) Testen
+
+```bash
+kubectl -n longhorn-system get ingress longhorn-ui
+kubectl -n longhorn-system get certificate longhorn-tls
+```
+
+---
+
+# 10) Rancher auf VM
+
+## 10.1) VM anlegen
+
+- Ubuntu Server 24.04 LTS
+- 2 CPUs
+- 8GB RAM
+- 64GB Disk
+- NIC im 100er-VLAN
+
+## 10.2) DNS für Rancher
+
+rancher.cluster.rohrbom.be -> 192.168.100.2 in Cloudflare ohne Proxy
+
+## 10.3) VM Init
+
+```bash
+sudo apt update && sudo apt full-upgrade -y
+sudo apt install kitty-terminfo -y
+sudo timedatectl set-timezone Europe/Berlin
+
+# Docker installieren
+curl -fsSL https://get.docker.com | sudo sh
+sudo systemctl enable --now docker
+
+sudo usermod -aG docker $USER
+```
+
+## 10.4) Rancher Container starten
+
+```bash
+sudo docker run -d --restart=unless-stopped --privileged \
+  -p 80:80 -p 443:443 \
+  --name rancher rancher/rancher:stable
+```
+
+## 10.5) Rancher einrichten
+
+- Bootstrap Passwort extrahieren und neues Passwort setzen
+- Cluster importieren und erzeugten Befehl auf Admin PC ausführen (`curl ...`)
+
+---
+
+# Beschreibung des Clusters von Chatty
+
+## Struktur & Grunddaten
+
+* **Nodes**
+
+  * Control-Plane (3×): `cp-1 … cp-3` — **tainted**: `NoSchedule`
+  * Worker (3×): `wk-1 … wk-3` — **gelabelt**: `longhorn=storage`
+* **Kubernetes**
+
+  * Distribution: **k3s v1.33.4+k3s1**, HA (embedded etcd)
+  * API-VIP (kube-vip, ARP/L2): **192.168.100.100** → `api.cluster.rohrbom.be`
+  * `kubectl`-Nutzung primär vom **Admin-PC** (VIP/FQDN)
+* **Netz**
+
+  * Aktives VLAN: **100 (192.168.100.0/24)**
+  * **MetalLB**: L2, Pool **192.168.100.151–170** (nicht im DHCP-Bereich)
+* **Ingress / TLS**
+
+  * **ingress-nginx** als LB-Service (bekommt IP aus MetalLB)
+  * **cert-manager** + **Cloudflare DNS-01** (Issuer: `letsencrypt-dns`)
+  * DNS über Cloudflare auf **LAN-IPs** (Proxy **aus** / „DNS only“)
+* **Storage**
+
+  * **Longhorn** installiert
+  * Default-StorageClass: `longhorn-2r` (Repliken=2, dataLocality=best-effort)
+  * Pfad: **/var/lib/longhorn** (einfaches Verzeichnis auf Worker-SSD)
+* **Rancher**
+
+  * Läuft in **externer VM** (Docker), erreichbar über `https://rancher.cluster.rohrbom.be`
+  * Server URL in Rancher gesetzt; Cluster per „Import Existing“ eingebunden
+
+---
+
+## Deploy-Konventionen (empfohlen)
+
+* **Namespaces**: pro App/Domainbereich (z. B. `media`, `home`, `tools`, `monitoring`)
+* **K8s-Objekte pro Service**:
+
+  * `Deployment` (oder `StatefulSet`), `Service` (ClusterIP), optional `Ingress`
+  * **PVC** mit `storageClassName: longhorn-2r` für persistente Daten
+  * **Probes**: `readinessProbe`/`livenessProbe` verpflichtend
+  * **Ressourcen**: sinnvolle `requests`/`limits` (Pi-Hardware im Blick)
+  * **Replicas**: mind. 2 für stateless Web, 1–3 für stateful je nach App
+  * **Topology**: `topologySpreadConstraints` nach `kubernetes.io/hostname`
+  * **PDB** (PodDisruptionBudget) für kritische Dienste
+* **Konfiguration/Secrets**
+
+  * **ConfigMaps** für nicht-geheime Settings
+  * **Secrets** (Opaque) für Passwörter/Keys; Zugriff via `envFrom`/`valueFrom`
+* **Zugriff von außen**
+
+  * HTTP/HTTPS: **Ingress** (Host-basierte Routen), TLS über cert-manager
+  * TCP/UDP-Dienste ohne HTTP: `Service: LoadBalancer` (MetalLB-IP zuweisen)
+* **Was bleibt außerhalb** (wie geplant)
+
+  * **Pi-hole**, **qBittorrent+VPN** (Netzwerknah, spezielle Ports/TUN)
+
+---
+
+## Migrations-Checkliste (Compose → K8s)
+
+1. **Container-Image & Version** festlegen (pinn auf Tag, nicht `latest`)
+2. **Persistenz identifizieren**
+
+   * Was war `./data` o. ä.? → **PVC** anlegen (z. B. `10–50Gi`, SC `longhorn-2r`)
+3. **Konfiguration abtrennen**
+
+   * `.env` & Konfigdateien → **ConfigMap** / **Secret**
+   * Pfade als `volumeMounts`, ENV via `envFrom`
+4. **Service-Schnittstellen**
+
+   * HTTP(S): `Service(ClusterIP)` + **Ingress** (`ingressClassName: nginx`, Hostname)
+   * Non-HTTP: `Service: LoadBalancer` (Annotationen für `externalTrafficPolicy: Local` optional)
+5. **Health Probes** definieren
+
+   * `/health`, `/`, TCP-Port, oder Script—ohne Probes kein sauberes Rollout
+6. **Ressourcen & Replikation**
+
+   * `resources.requests`: CPU (z. B. `100–300m`), RAM (z. B. `256–1024Mi`)
+   * `replicas: 2` für stateless; `affinity`/`spread` für Verteilung
+7. **Netz/DNS**
+
+   * Wunsch-Hostname → Cloudflare **A-Record → Ingress-IP** (DNS only)
+   * Ingress mit `cert-manager.io/cluster-issuer: letsencrypt-dns`
+8. **Observability**
+
+   * **kube-prometheus-stack** (später): Dashboards/Alerts
+   * App-Logs via `kubectl logs` / Rancher UI; optional Loki/Promtail
+
+---
+
+## Minimal-Blueprints (als Vorlage)
+
+**(A) PVC**
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: app-data }
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources: { requests: { storage: 10Gi } }
+  storageClassName: longhorn-2r
+```
+
+**(B) Deployment + Service**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: myapp, namespace: tools }
+spec:
+  replicas: 2
+  selector: { matchLabels: { app: myapp } }
+  template:
+    metadata: { labels: { app: myapp } }
+    spec:
+      topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: kubernetes.io/hostname
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector: { matchLabels: { app: myapp } }
+      containers:
+      - name: myapp
+        image: ghcr.io/owner/myapp:1.2.3
+        ports: [{ containerPort: 8080 }]
+        volumeMounts: [{ name: data, mountPath: /var/lib/myapp }]
+        envFrom:
+        - configMapRef: { name: myapp-config }
+        - secretRef:    { name: myapp-secrets }
+        readinessProbe: { httpGet: { path: /health, port: 8080 }, initialDelaySeconds: 10, periodSeconds: 10 }
+        livenessProbe:  { httpGet: { path: /health, port: 8080 }, initialDelaySeconds: 30, periodSeconds: 20 }
+      volumes:
+      - name: data
+        persistentVolumeClaim: { claimName: app-data }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: myapp, namespace: tools }
+spec:
+  selector: { app: myapp }
+  ports: [{ port: 80, targetPort: 8080 }]
+```
+
+**(C) Ingress (TLS via cert-manager)**
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: myapp
+  namespace: tools
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-dns
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: myapp.cluster.rohrbom.be
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend: { service: { name: myapp, port: { number: 80 } } }
+  tls:
+  - hosts: [myapp.cluster.rohrbom.be]
+    secretName: myapp-tls
+```
+
+---
+
+## Betriebs-Essentials & „Gotchas“
+
+* **kube-vip**: läuft nur auf CP-Nodes; VIP **niemals** im DHCP-Pool.
+* **MetalLB**: eine IP je LB-Service; **Pools** sauber von DHCP/VIP trennen.
+* **Longhorn**: Platz im Root-FS im Auge behalten (du nutzt das einfache Verzeichnis).
+* **Ingress Sicherheit**: Longhorn-UI & Admin-UIs idealerweise nur intern freigeben (oder per IP-Whitelist/Basic-Auth).
+* **Backups**:
+
+  * Longhorn → BackupTarget (NFS/S3) einrichten.
+  * Rancher-VM → VM-Snapshots/regelmäßige Backups; Docker-Volume `rancher-data`.
+* **Ressourcen**: lieber konservative `requests` starten, dann beobachten/erhöhen.
+* **Außen vor**: Pi-hole / qBittorrent+VPN weiter **außerhalb** betreiben.
+

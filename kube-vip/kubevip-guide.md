@@ -5,5 +5,4 @@ sudo kubectl -n kube-system get pods -l app=kube-vip -o wide
 
 # Funktionstest
 curl -sk https://192.168.100.100:6443/healthz   # 401/ok ist gut
-
 ```
