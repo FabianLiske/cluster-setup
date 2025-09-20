@@ -1,0 +1,74 @@
+# VLAN 100 — Cluster-Admin (native/untagged am Host: eth0)
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: pool-vlan100-admin
+  namespace: metallb-system
+spec:
+  addresses: ["192.168.100.151-192.168.100.151"]
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: adv-vlan100-admin
+  namespace: metallb-system
+spec:
+  ipAddressPools: ["pool-vlan100-admin"]
+  interfaces: ["eth0"]
+
+---
+# VLAN 10 — Management-Tools
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: pool-vlan10-mgmt
+  namespace: metallb-system
+spec:
+  addresses: ["192.168.10.151-192.168.10.151"]
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: adv-vlan10-mgmt
+  namespace: metallb-system
+spec:
+  ipAddressPools: ["pool-vlan10-mgmt"]
+  interfaces: ["vlan10"]
+
+---
+# VLAN 20 — Interne Dienste
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: pool-vlan20-internal
+  namespace: metallb-system
+spec:
+  addresses: ["192.168.20.151-192.168.20.151"]
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: adv-vlan20-internal
+  namespace: metallb-system
+spec:
+  ipAddressPools: ["pool-vlan20-internal"]
+  interfaces: ["vlan20"]
+
+---
+# VLAN 30 — Öffentliche Dienste
+apiVersion: metallb.io/v1beta1
+kind: IPAddressPool
+metadata:
+  name: pool-vlan30-public
+  namespace: metallb-system
+spec:
+  addresses: ["192.168.30.151-192.168.30.151"]
+---
+apiVersion: metallb.io/v1beta1
+kind: L2Advertisement
+metadata:
+  name: adv-vlan30-public
+  namespace: metallb-system
+spec:
+  ipAddressPools: ["pool-vlan30-public"]
+  interfaces: ["vlan30"]

@@ -6,7 +6,7 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-dns
 spec:
-  ingressClassName: nginx
+  ingressClassName: nginx-admin
   rules:
   - host: longhorn.cluster.rohrbom.be
     http:

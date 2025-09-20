@@ -45,6 +45,41 @@ sudo apt install -y open-iscsi nfs-common smartmontools
 sudo systemctl enable --now iscsid
 ```
 
+## 1.5) VLAN Subinterfaces
+
+```bash
+sudo nano /etc/netplan/90-vlans.yaml
+```
+
+```yaml
+network:
+  version: 2
+  ethernets:
+    eth0:
+      dhcp4: true
+  vlans:
+    vlan10:
+      id: 10
+      link: eth0
+      addresses: []
+    vlan20:
+      id: 20
+      link: eth0
+      addresses: []
+    vlan30:
+      id: 30
+      link: eth0
+      addresses: []
+```
+
+Apply und Test:
+
+```bash
+sudo netplan apply
+# Wie ein guter Hobby-Admin ignorieren wir die Warnung zu den File Permissions
+ip -br link | egrep '^vlan(10|20|30)\b'   # sollten UP sein
+```
+
 ---
 
 # 2) Control Plane Nodes
@@ -180,25 +215,68 @@ Mein DHCP vergibt `.200–.250`, Reservierungen liegen bei `.11–.13` & `.21–
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/metallb/metallb/v0.15.2/config/manifests/metallb-native.yaml
-kubectl apply -f metallb/metallb.yaml
+kubectl apply -f metallb/metallb-multi-vlan.yaml
+kubectl -n metallb-system get ipaddresspools,l2advertisements
 ```
 
 ---
 
-# 8) Ingress Controller (NGINX) – für Web-Apps
+# 8) Ingress Controller (NGINX) - Multi VLAN
+
+## 8.1) Helm Repo
 
 ```bash
 helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
 helm repo update
-helm install ingress ingress-nginx/ingress-nginx \
-  -n ingress-nginx --create-namespace \
-  --set controller.service.type=LoadBalancer
+```
+
+## 8.2) VLAN 100
+
+```bash
+helm install ingress-vlan100-admin ingress-nginx/ingress-nginx \
+  -n ingress-vlan100-admin --create-namespace \
+  -f ingress/values-ingress-vlan100-admin.yaml
+```
+
+## 8.3) VLAN 10
+
+```bash
+helm install ingress-vlan10-mgmt ingress-nginx/ingress-nginx \
+  -n ingress-vlan10-mgmt --create-namespace \
+  -f ingress/values-ingress-vlan10-mgmt.yaml
+```
+
+## 8.4 VLAN 20
+
+```bash
+helm install ingress-vlan20-internal ingress-nginx/ingress-nginx \
+  -n ingress-vlan20-internal --create-namespace \
+  -f ingress/values-ingress-vlan20-internal.yaml
+```
+
+## 8.5 VLAN 30
+
+```bash
+helm install ingress-vlan30-public ingress-nginx/ingress-nginx \
+  -n ingress-vlan30-public --create-namespace \
+  -f ingress/values-ingress-vlan30-public.yaml
 ```
 
 Erhält eine IP aus `192.168.100.151–199`.
 Test:
 ```bash
-kubectl -n ingress-nginx get svc ingress-ingress-nginx-controller -o wide
+# Jede Ingress-Instanz hat die richtige EXTERNAL-IP?
+kubectl -n ingress-vlan100-admin   get svc | grep ingress-nginx-controller
+kubectl -n ingress-vlan10-mgmt     get svc | grep ingress-nginx-controller
+kubectl -n ingress-vlan20-internal get svc | grep ingress-nginx-controller
+kubectl -n ingress-vlan30-public   get svc | grep ingress-nginx-controller
+
+# IngressClasses registriert?
+kubectl get ingressclass
+
+# MetalLB gesund?
+kubectl -n metallb-system get ipaddresspools,l2advertisements
+kubectl -n metallb-system logs deploy/controller | tail -n 100
 ```
 
 ---
