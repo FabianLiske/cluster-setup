@@ -64,6 +64,7 @@ spec:
             - "192.168.100.100"
             - --interface
             - "eth0"
+            - --arp
           securityContext:
             capabilities:
               add: ["NET_ADMIN","NET_RAW","SYS_TIME"]
