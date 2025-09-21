@@ -3,3 +3,4 @@ certmanager/issuer.yaml
 guide-secrets.md
 altlast.md
 kochen.mitschen.de/ghcr-cred.yaml
+vault.rohrbom.be/vault-secret.yaml

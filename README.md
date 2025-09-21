@@ -327,9 +327,24 @@ kubectl -n longhorn-system get certificate longhorn-tls
 
 ---
 
-# 10) Rancher auf VM
+# 10) Longhorn Nodes labeln
 
-## 10.1) VM anlegen
+## 10.1) Longhorn UI abrufen
+
+Für mich ist das [hier](https://longhorn.cluster.rohrbom.be)
+
+## 10.2) Für jede Node
+
+- Node selecten
+- Unter Operation > Edit Node and Disks > New Tag
+  - `general_storage`
+- Save
+
+---
+
+# 11) Rancher auf VM
+
+## 11.1) VM anlegen
 
 - Ubuntu Server 24.04 LTS
 - 2 CPUs
@@ -337,11 +352,11 @@ kubectl -n longhorn-system get certificate longhorn-tls
 - 64GB Disk
 - NIC im 100er-VLAN
 
-## 10.2) DNS für Rancher
+## 11.2) DNS für Rancher
 
 rancher.cluster.rohrbom.be -> 192.168.100.2 in Cloudflare ohne Proxy
 
-## 10.3) VM Init
+## 11.3) VM Init
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
@@ -355,7 +370,7 @@ sudo systemctl enable --now docker
 sudo usermod -aG docker $USER
 ```
 
-## 10.4) Rancher Container starten
+## 11.4) Rancher Container starten
 
 ```bash
 sudo docker run -d --restart=unless-stopped --privileged \
@@ -363,7 +378,7 @@ sudo docker run -d --restart=unless-stopped --privileged \
   --name rancher rancher/rancher:stable
 ```
 
-## 10.5) Rancher einrichten
+## 11.5) Rancher einrichten
 
 - Bootstrap Passwort extrahieren und neues Passwort setzen
 - Cluster importieren und erzeugten Befehl auf Admin PC ausführen (`curl ...`)
