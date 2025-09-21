@@ -1,3 +1,5 @@
 certmanager/cf-secret.yaml
 certmanager/issuer.yaml
 guide-secrets.md
+altlast.md
+kochen.mitschen.de/ghcr-cred.yaml

@@ -23,15 +23,21 @@ sudo modprobe overlay && sudo modprobe br_netfilter
 ```
 
 ```bash
-sudo nano /etc/sysctl.d/99-kubernetes.conf
+sudo rm /etc/sysctl.d/99-kubernetes.conf
+sudo nano /etc/sysctl.d/100-multivlan.conf
 ```
 
 ```yaml
 net.bridge.bridge-nf-call-iptables=1
 net.ipv4.ip_forward=1
 net.ipv6.conf.all.forwarding=1
-net.ipv4.conf.all.rp_filter=2
-net.ipv4.conf.default.rp_filter=2
+
+net.ipv4.conf.all.rp_filter=0
+net.ipv4.conf.default.rp_filter=0
+net.ipv4.conf.vlan10.rp_filter=0
+net.ipv4.conf.vlan20.rp_filter=0
+net.ipv4.conf.vlan30.rp_filter=0
+net.ipv4.conf.eth0.rp_filter=0
 ```
 
 ```bash

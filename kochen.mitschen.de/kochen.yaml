@@ -1,0 +1,91 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: svc-kochen
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kochen-sa
+  namespace: svc-kochen
+imagePullSecrets:
+  - name: ghcr-cred
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kochen
+  namespace: svc-kochen
+  labels:
+    app: kochen
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: kochen }
+  template:
+    metadata:
+      labels: { app: kochen }
+    spec:
+      serviceAccountName: kochen-sa
+      imagePullSecrets:
+        - name: ghcr-cred
+      containers:
+        - name: web
+          image: ghcr.io/fabianliske/kochenmitschen:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 80
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits:   { cpu: 500m, memory: 256Mi }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kochen
+  namespace: svc-kochen
+spec:
+  type: ClusterIP
+  selector: { app: kochen }
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kochen
+  namespace: svc-kochen
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-dns
+
+    # HTTPS erzwingen + HSTS (30 Tage to start)
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/hsts: "true"
+    nginx.ingress.kubernetes.io/hsts-max-age: "2592000"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: kochen.mitschen.de
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kochen
+                port:
+                  number: 80
+  tls:
+    - hosts: [kochen.mitschen.de]
+      secretName: kochen-tls
