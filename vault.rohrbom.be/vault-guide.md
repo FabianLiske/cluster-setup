@@ -1,8 +1,7 @@
 # Frisches Setup
 
 ```bash
-kubectl get ns svc-vaultwarden || kubectl create ns svc-vaultwarden
-
+kubectl apply -f vault.rohrbom.be/ns.yaml
 kubectl apply -f vault.rohrbom.be/vault-secret.yaml
 kubectl apply -f vault.rohrbom.be/vault.yaml
 

@@ -1,13 +1,31 @@
+# ingress/values-ingress-vlan10-mgmt.yaml
 controller:
+  kind: DaemonSet
+
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "node-role.kubernetes.io/master"
+      operator: "Exists"
+      effect: "NoSchedule"
+
   ingressClassResource:
     name: nginx-mgmt
     controllerValue: "k8s.io/ingress-nginx-mgmt"
   ingressClass: nginx-mgmt
   ingressClassByName: true
   watchIngressWithoutClass: false
+
   service:
     type: LoadBalancer
     externalTrafficPolicy: Local
     loadBalancerIP: 192.168.10.151
     annotations:
       metallb.universe.tf/address-pool: pool-vlan10-mgmt
+
+  publishService:
+    enabled: true
+
+  config:
+    use-forwarded-headers: "false"

@@ -1,0 +1,130 @@
+# mon.rohrbom.be/_template/service-template.yaml
+# ➜ Ersetze die PLATZHALTER_IN_GROSSBUCHSTABEN und lösche, was du nicht brauchst.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: NAMESPACE            # z.B. ops-monitoring
+
+---
+# OPTIONAL: Persistent Storage (löschen, wenn stateless)
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: APP-data             # z.B. myapp-data
+  namespace: NAMESPACE
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: STORAGE_CLASS  # z.B. longhorn-2r
+  resources:
+    requests:
+      storage: STORAGE_SIZE        # z.B. 50Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: APP                   # z.B. myapp
+  namespace: NAMESPACE
+  labels: { app: APP }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: APP } }
+  template:
+    metadata: { labels: { app: APP } }
+    spec:
+      # OPTIONAL: für Images, die nicht root schreiben sollen
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: APP
+          image: IMAGE:TAG          # z.B. ghcr.io/org/app:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: PORT_NAME       # z.B. http
+              containerPort: CONTAINER_PORT  # z.B. 8080
+          env:
+            - { name: TZ, value: Europe/Berlin }
+          # OPTIONAL: Volumes mounten, falls PVC genutzt
+          volumeMounts:
+            - { name: data, mountPath: /PATH/IN/CONTAINER }  # z.B. /var/lib/app
+          # Health Probes anpassen
+          readinessProbe:
+            httpGet: { path: HEALTH_PATH, port: PORT_NAME }  # z.B. /health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: HEALTH_PATH, port: PORT_NAME }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits:   { cpu: 1,    memory: 1Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: APP-data     # nur wenn PVC genutzt wird
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: APP
+  namespace: NAMESPACE
+spec:
+  type: ClusterIP
+  selector: { app: APP }
+  ports:
+    - name: PORT_NAME               # z.B. http
+      port: SERVICE_PORT            # z.B. 8080 (Service-Port)
+      targetPort: PORT_NAME
+
+---
+# Ingress über VLAN 10 (nginx-mgmt). Für Public in VLAN 30: ingressClassName: nginx
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: APP
+  namespace: NAMESPACE
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-dns
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # OPTIONAL: für größere Uploads
+    # nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+spec:
+  ingressClassName: nginx-mgmt
+  rules:
+    - host: FQDN                   # z.B. app.mon.rohrbom.be
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: APP, port: { number: SERVICE_PORT } }
+  tls:
+    - hosts: [FQDN]
+      secretName: APP-tls
+
+---
+# NetworkPolicy: erlaubt NUR Zugriffe vom mgmt-Ingress + Pods desselben Namespaces.
+# Andere Namespaces müssen über den Ingress gehen.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: APP-allow-namespace-and-mgmt-ingress
+  namespace: NAMESPACE
+spec:
+  podSelector: { matchLabels: { app: APP } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: NAMESPACE }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-vlan10-mgmt }
+      ports:
+        - protocol: TCP
+          port: SERVICE_PORT
