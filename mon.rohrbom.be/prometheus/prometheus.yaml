@@ -1,0 +1,278 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ops-monitoring
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: ops-monitoring
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn-2r
+  resources:
+    requests:
+      storage: 50Gi
+---
+# ServiceAccount + RBAC für Discovery (Pods/Services/Endpoints/Slices/Nodes/Namespaces)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus
+  namespace: ops-monitoring
+---
+# ClusterRole für Discovery
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: prometheus-discovery
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics", "services", "endpoints", "pods", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["networking.k8s.io", "extensions"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch"]
+---
+# Binding für ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: prometheus-discovery-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: prometheus-discovery
+subjects:
+  - kind: ServiceAccount
+    name: prometheus
+    namespace: ops-monitoring
+---
+# Prometheus-Konfiguration: nur Spezial-Jobs + generische Label-Jobs
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: ops-monitoring
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+
+    scrape_configs:
+      # Prometheus selbst
+      - job_name: 'prometheus'
+        static_configs:
+          - targets: ['localhost:9090']
+
+      # --- SPEZIAL: Kubernetes API-Server (HTTPS + SA-Token) ---
+      - job_name: 'kubernetes-apiservers'
+        kubernetes_sd_configs:
+          - role: endpoints
+        scheme: https
+        tls_config:
+          ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+            action: keep
+            regex: default;kubernetes;https
+
+      # --- SPEZIAL: Kubelet (pro Node) ---
+      - job_name: 'kubelet'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          # Viele Distros nutzen node-spezifische Zertifikate
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        relabel_configs:
+          - action: replace
+            source_labels: [__address__]
+            regex: (.+):\d+
+            replacement: $1:10250
+            target: __address__
+
+      # --- SPEZIAL: cAdvisor Metriken über Kubelet ---
+      - job_name: 'kubelet-cadvisor'
+        kubernetes_sd_configs:
+          - role: node
+        scheme: https
+        tls_config:
+          insecure_skip_verify: true
+        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+        metrics_path: /metrics/cadvisor
+        relabel_configs:
+          - action: replace
+            source_labels: [__address__]
+            regex: (.+):\d+
+            replacement: $1:10250
+            target: __address__
+
+      # --- GENERISCH: Pods mit Prometheus-Annotations ---
+      - job_name: 'kubernetes-pods-annotated'
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - action: keep
+            source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            regex: "true"
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
+            target: __scheme__
+            regex: (https?)
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            target: __metrics_path__
+            regex: (.+)
+          - action: replace
+            source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            regex: (.+?)(?::\d+)?;(\d+)
+            target: __address__
+            replacement: $1:$2
+          - action: labelmap
+            regex: __meta_kubernetes_pod_label_(.+)
+          - action: replace
+            source_labels: [__meta_kubernetes_namespace]
+            target: namespace
+          - action: replace
+            source_labels: [__meta_kubernetes_pod_name]
+            target: pod
+
+      # --- GENERISCH: Services mit Prometheus-Annotations ---
+      - job_name: 'kubernetes-services-annotated'
+        kubernetes_sd_configs:
+          - role: service
+        relabel_configs:
+          - action: keep
+            source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+            regex: "true"
+          - action: replace
+            source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+            target: __scheme__
+            regex: (https?)
+          - action: replace
+            source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+            target: __metrics_path__
+            regex: (.+)
+          - action: replace
+            source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+            regex: (.+?)(?::\d+)?;(\d+)
+            target: __address__
+            replacement: $1:$2
+---
+# Prometheus Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: ops-monitoring
+  labels: { app: prometheus }
+spec:
+  replicas: 1
+  selector: { matchLabels: { app: prometheus } }
+  template:
+    metadata: { labels: { app: prometheus } }
+    spec:
+      serviceAccountName: prometheus
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: prometheus
+          image: prom/prometheus:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config.file=/etc/prometheus/prometheus.yml
+            - --storage.tsdb.path=/prometheus
+            - --storage.tsdb.retention.time=10y
+            # - --web.enable-lifecycle   # Optional: POST /-/reload statt Rollout
+          ports:
+            - { name: http, containerPort: 9090 }
+          env:
+            - { name: TZ, value: Europe/Berlin }
+          volumeMounts:
+            - { name: data,   mountPath: /prometheus }
+            - { name: config, mountPath: /etc/prometheus/prometheus.yml, subPath: prometheus.yml }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /-/healthy, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 200m, memory: 1Gi }
+            limits:   { cpu: "2",  memory: 4Gi }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: prometheus-data }
+        - name: config
+          configMap:
+            name: prometheus-config
+---
+# Prometheus Service für andere Pods
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: ops-monitoring
+spec:
+  type: ClusterIP
+  selector: { app: prometheus }
+  ports:
+    - { name: http, port: 9090, targetPort: http }
+---
+# Ingress mit TLS
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: prometheus
+  namespace: ops-monitoring
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-dns
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx-mgmt
+  rules:
+    - host: prometheus.mon.rohrbom.be
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: prometheus, port: { number: 9090 } }
+  tls:
+    - hosts: [prometheus.mon.rohrbom.be]
+      secretName: prometheus-tls
+---
+# Erlaubt Traffic nur vom mgmt-Ingress-Namespace (VLAN 10) & aus ops-monitoring
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: prometheus-allow-ops-and-ingress
+  namespace: ops-monitoring
+spec:
+  podSelector: { matchLabels: { app: prometheus } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ops-monitoring }
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-vlan10-mgmt }
+      ports:
+        - protocol: TCP
+          port: 9090

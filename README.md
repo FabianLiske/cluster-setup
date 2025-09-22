@@ -297,6 +297,7 @@ longhorn.cluster.rohrbom.be -> 192.168.100.151 in Cloudflare ohne Proxy
 
 ```bash
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.18.2/cert-manager.yaml
+kubectl apply -f --server-side -f certmanager/certmanager-metrics.yaml
 kubectl -n cert-manager get pods
 ```
 

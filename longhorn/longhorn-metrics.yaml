@@ -1,0 +1,66 @@
+# Scrape JEDE longhorn-manager Pod (pro Node) auf :9500/metrics
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: longhorn-manager
+  namespace: longhorn-system
+spec:
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9500"
+        prometheus.io/path: "/metrics"
+---
+# CSI Sidecars – jeweils :8000/metrics
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-attacher
+  namespace: longhorn-system
+spec:
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-provisioner
+  namespace: longhorn-system
+spec:
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-resizer
+  namespace: longhorn-system
+spec:
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: csi-snapshotter
+  namespace: longhorn-system
+spec:
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"

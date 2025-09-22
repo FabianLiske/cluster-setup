@@ -29,3 +29,11 @@ controller:
 
   config:
     use-forwarded-headers: "false"
+
+  metrics:
+    enabled: true
+    service:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "10254"
+        prometheus.io/path: "/metrics"
