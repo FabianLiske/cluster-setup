@@ -15,47 +15,36 @@ spec:
     requests:
       storage: 50Gi
 ---
-# ServiceAccount + RBAC für Discovery (Pods/Services/Endpoints/Slices/Nodes/Namespaces)
+# ServiceAccount bleibt, wir nutzen das Token für den API-Server-Scrape.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: prometheus
   namespace: ops-monitoring
 ---
-# ClusterRole für Discovery
+# Nur noch: /metrics vom API-Server lesen dürfen (nonResourceURL)
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: prometheus-discovery
+  name: prometheus-apiserver-metrics-read
 rules:
-  - apiGroups: [""]
-    resources: ["nodes", "nodes/metrics", "services", "endpoints", "pods", "namespaces"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["discovery.k8s.io"]
-    resources: ["endpointslices"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["networking.k8s.io", "extensions"]
-    resources: ["ingresses"]
-    verbs: ["get", "list", "watch"]
-  - apiGroups: ["coordination.k8s.io"]
-    resources: ["leases"]
-    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
 ---
-# Binding für ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: prometheus-discovery-binding
+  name: prometheus-apiserver-metrics-read-binding
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: prometheus-discovery
+  name: prometheus-apiserver-metrics-read
 subjects:
   - kind: ServiceAccount
     name: prometheus
     namespace: ops-monitoring
 ---
-# Prometheus-Konfiguration: nur Spezial-Jobs + generische Label-Jobs
+# Statische Prometheus-Config (keine kubernetes_sd_configs mehr)
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -68,109 +57,86 @@ data:
       evaluation_interval: 15s
 
     scrape_configs:
-      # Prometheus selbst
-      - job_name: 'prometheus'
+      # Prometheus selbst (UI) - Programm-/Handler-Metriken droppen
+      - job_name: prometheus
         static_configs:
           - targets: ['localhost:9090']
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: '^(go_.*|process_.*|promhttp_.*)$'
+            action: drop
 
-      # --- SPEZIAL: Kubernetes API-Server (HTTPS + SA-Token) ---
-      - job_name: 'kubernetes-apiservers'
-        kubernetes_sd_configs:
-          - role: endpoints
+      # === NODES: Node Exporter auf jeder Node ===
+      - job_name: node-exporter
+        static_configs:
+          - targets:
+              # Hinweis: Falls Hostnames im Pod nicht resolvbar sind, lieber IPs eintragen.
+              - 'cp-1:9100'
+              - 'cp-2:9100'
+              - 'cp-3:9100'
+              - 'wk-1:9100'
+              - 'wk-2:9100'
+              - 'wk-3:9100'
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: '^(go_.*|process_.*|promhttp_.*)$'
+            action: drop
+
+      # === INGRESS: NGINX Controller Metrics ===
+      - job_name: nginx-ingress
+        static_configs:
+          - targets:
+              - 'ingress-vlan10-mgmt-ingress-nginx-controller-metrics.ingress-vlan10-mgmt.svc:10254'
+              - 'ingress-vlan20-internal-ingress-nginx-controller-metrics.ingress-vlan20-internal.svc:10254'
+              - 'ingress-vlan30-public-ingress-nginx-controller-metrics.ingress-vlan30-public.svc:10254'
+              - 'ingress-vlan100-admin-ingress-nginx-controller-metrics.ingress-vlan100-admin.svc:10254'
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: '^(go_.*|process_.*|promhttp_.*)$'
+            action: drop
+
+      # === CLUSTER HEALTH: API-Server (/metrics) ===
+      - job_name: kubernetes-apiserver
         scheme: https
+        static_configs:
+          - targets: ['kubernetes.default.svc:443']
         tls_config:
           ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
         bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        relabel_configs:
-          - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
-            action: keep
-            regex: default;kubernetes;https
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: '^(go_.*|process_.*|promhttp_.*)$'
+            action: drop
 
-      # --- SPEZIAL: Kubelet (pro Node) ---
-      - job_name: 'kubelet'
-        kubernetes_sd_configs:
-          - role: node
-        scheme: https
-        tls_config:
-          # Viele Distros nutzen node-spezifische Zertifikate
-          insecure_skip_verify: true
-        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        relabel_configs:
-          - action: replace
-            source_labels: [__address__]
-            regex: (.+):\d+
-            replacement: $1:10250
-            target: __address__
+      # === CLUSTER HEALTH: CoreDNS ===
+      - job_name: coredns
+        static_configs:
+          - targets: ['kube-dns.kube-system.svc:9153']
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: '^(go_.*|process_.*|promhttp_.*)$'
+            action: drop
 
-      # --- SPEZIAL: cAdvisor Metriken über Kubelet ---
-      - job_name: 'kubelet-cadvisor'
-        kubernetes_sd_configs:
-          - role: node
-        scheme: https
-        tls_config:
-          insecure_skip_verify: true
-        bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
-        metrics_path: /metrics/cadvisor
-        relabel_configs:
-          - action: replace
-            source_labels: [__address__]
-            regex: (.+):\d+
-            replacement: $1:10250
-            target: __address__
+      # === CLUSTER HEALTH: kube-state-metrics (Zustand/Verfügbarkeit) ===
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: ['kube-state-metrics.ops-monitoring.svc:8080']
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: '^(go_.*|process_.*|promhttp_.*)$'
+            action: drop
 
-      # --- GENERISCH: Pods mit Prometheus-Annotations ---
-      - job_name: 'kubernetes-pods-annotated'
-        kubernetes_sd_configs:
-          - role: pod
-        relabel_configs:
-          - action: keep
-            source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
-            regex: "true"
-          - action: replace
-            source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scheme]
-            target: __scheme__
-            regex: (https?)
-          - action: replace
-            source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
-            target: __metrics_path__
-            regex: (.+)
-          - action: replace
-            source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
-            regex: (.+?)(?::\d+)?;(\d+)
-            target: __address__
-            replacement: $1:$2
-          - action: labelmap
-            regex: __meta_kubernetes_pod_label_(.+)
-          - action: replace
-            source_labels: [__meta_kubernetes_namespace]
-            target: namespace
-          - action: replace
-            source_labels: [__meta_kubernetes_pod_name]
-            target: pod
-
-      # --- GENERISCH: Services mit Prometheus-Annotations ---
-      - job_name: 'kubernetes-services-annotated'
-        kubernetes_sd_configs:
-          - role: service
-        relabel_configs:
-          - action: keep
-            source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
-            regex: "true"
-          - action: replace
-            source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
-            target: __scheme__
-            regex: (https?)
-          - action: replace
-            source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
-            target: __metrics_path__
-            regex: (.+)
-          - action: replace
-            source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
-            regex: (.+?)(?::\d+)?;(\d+)
-            target: __address__
-            replacement: $1:$2
+      # === STORAGE: Longhorn ===
+      - job_name: longhorn
+        dns_sd_configs:
+          - names: ['_metrics._tcp.longhorn-manager-metrics.longhorn-system.svc']
+            type: SRV
+            refresh_interval: 1m
+        metric_relabel_configs:
+          - source_labels: [__name__]
+            regex: '^(go_.*|process_.*|promhttp_.*)$'
+            action: drop
 ---
-# Prometheus Deployment
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -179,9 +145,11 @@ metadata:
   labels: { app: prometheus }
 spec:
   replicas: 1
+  strategy: { type: Recreate }
   selector: { matchLabels: { app: prometheus } }
   template:
-    metadata: { labels: { app: prometheus } }
+    metadata:
+      labels: { app: prometheus }
     spec:
       serviceAccountName: prometheus
       securityContext:
@@ -195,9 +163,10 @@ spec:
             - --config.file=/etc/prometheus/prometheus.yml
             - --storage.tsdb.path=/prometheus
             - --storage.tsdb.retention.time=10y
-            # - --web.enable-lifecycle   # Optional: POST /-/reload statt Rollout
+            # - --web.enable-lifecycle  # optional: POST /-/reload
           ports:
-            - { name: http, containerPort: 9090 }
+            - name: http
+              containerPort: 9090
           env:
             - { name: TZ, value: Europe/Berlin }
           volumeMounts:
@@ -218,10 +187,8 @@ spec:
         - name: data
           persistentVolumeClaim: { claimName: prometheus-data }
         - name: config
-          configMap:
-            name: prometheus-config
+          configMap: { name: prometheus-config }
 ---
-# Prometheus Service für andere Pods
 apiVersion: v1
 kind: Service
 metadata:
@@ -231,9 +198,10 @@ spec:
   type: ClusterIP
   selector: { app: prometheus }
   ports:
-    - { name: http, port: 9090, targetPort: http }
+    - name: http
+      port: 9090
+      targetPort: http
 ---
-# Ingress mit TLS
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -258,7 +226,7 @@ spec:
     - hosts: [prometheus.mon.rohrbom.be]
       secretName: prometheus-tls
 ---
-# Erlaubt Traffic nur vom mgmt-Ingress-Namespace (VLAN 10) & aus ops-monitoring
+# Zugriff nur aus ops-monitoring sowie vom mgmt-Ingress-Namespace
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

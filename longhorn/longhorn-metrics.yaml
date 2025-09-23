@@ -1,66 +1,34 @@
-# Scrape JEDE longhorn-manager Pod (pro Node) auf :9500/metrics
-apiVersion: apps/v1
-kind: DaemonSet
+# longhorn-manager-metrics.yaml
+apiVersion: v1
+kind: Service
 metadata:
-  name: longhorn-manager
+  name: longhorn-manager-metrics
   namespace: longhorn-system
+  labels: { app: longhorn-manager }
 spec:
-  template:
-    metadata:
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "9500"
-        prometheus.io/path: "/metrics"
----
-# CSI Sidecars – jeweils :8000/metrics
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: csi-attacher
-  namespace: longhorn-system
-spec:
-  template:
-    metadata:
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
-        prometheus.io/path: "/metrics"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: csi-provisioner
-  namespace: longhorn-system
-spec:
-  template:
-    metadata:
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
-        prometheus.io/path: "/metrics"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: csi-resizer
-  namespace: longhorn-system
-spec:
-  template:
-    metadata:
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
-        prometheus.io/path: "/metrics"
----
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: csi-snapshotter
-  namespace: longhorn-system
-spec:
-  template:
-    metadata:
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "8000"
-        prometheus.io/path: "/metrics"
+  clusterIP: None
+  selector:
+    app: longhorn-manager
+  ports:
+    - name: metrics
+      port: 9500
+      targetPort: 9500
+#---
+#apiVersion: networking.k8s.io/v1
+#kind: NetworkPolicy
+#metadata:
+#  name: allow-prometheus-to-longhorn-metrics
+#  namespace: longhorn-system
+#spec:
+#  podSelector:
+#    matchLabels:
+#      app: longhorn-manager
+#  policyTypes: [Ingress]
+#  ingress:
+#    - from:
+#        - namespaceSelector:
+#            matchLabels:
+#              kubernetes.io/metadata.name: ops-monitoring
+#      ports:
+#        - protocol: TCP
+#          port: 9500

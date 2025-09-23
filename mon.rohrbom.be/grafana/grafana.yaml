@@ -23,6 +23,8 @@ metadata:
   labels: { app: grafana }
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector: { matchLabels: { app: grafana } }
   template:
     metadata: { labels: { app: grafana } }

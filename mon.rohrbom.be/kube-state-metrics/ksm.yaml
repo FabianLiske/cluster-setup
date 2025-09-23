@@ -70,7 +70,7 @@ spec:
       serviceAccountName: kube-state-metrics
       containers:
         - name: kube-state-metrics
-          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:latest
+          image: registry.k8s.io/kube-state-metrics/kube-state-metrics:v2.17.0
           ports:
             - { name: http, containerPort: 8080 }
             - { name: telemetry, containerPort: 8081 }
@@ -85,12 +85,12 @@ metadata:
   namespace: ops-monitoring
   labels:
     app.kubernetes.io/name: kube-state-metrics
-annotations:
-  prometheus.io/scrape: "true"
-  prometheus.io/port: "8080"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    # prometheus.io/path: "/metrics"   # optional (Default ist /metrics)
 spec:
   selector:
     app.kubernetes.io/name: kube-state-metrics
   ports:
     - { name: http, port: 8080, targetPort: http }
-    
