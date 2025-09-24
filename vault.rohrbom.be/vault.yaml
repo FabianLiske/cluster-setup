@@ -124,7 +124,7 @@ metadata:
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-dns
     nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
-    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7"
+    nginx.ingress.kubernetes.io/whitelist-source-range: "192.168.1.156,192.168.60.10"
 spec:
   ingressClassName: nginx
   rules:
@@ -156,3 +156,14 @@ spec:
       ports:
         - protocol: TCP
           port: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vaultwarden-egress-deny
+  namespace: svc-vaultwarden
+spec:
+  podSelector:
+    matchLabels: { app: vaultwarden }
+  policyTypes: [Egress]
+  egress: []
