@@ -8,3 +8,4 @@ mon.rohrbom.be/influxdb/influxdb-secret.yaml
 mon.rohrbom.be/grafana/grafana-secret.yaml
 temp.md
 ld.intern.rohrbom.be/linkding-secret.yaml
+cloudflare-ddns/cf-secret.yaml
