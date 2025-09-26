@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: svc-linkding
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: linkding-data
+  namespace: svc-linkding
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn-2r
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: linkding
+  namespace: svc-linkding
+  labels: { app: linkding }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: linkding }
+  template:
+    metadata:
+      labels: { app: linkding }
+    spec:
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: linkding
+          image: sissbruecker/linkding:latest-plus
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 9090
+          env:
+            - name: LD_HOST_PORT
+              value: "9090"
+            - name: LD_SUPERUSER_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: linkding-secrets
+                  key: superuser_name
+            - name: LD_SUPERUSER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: linkding-secrets
+                  key: superuser_password
+          volumeMounts:
+            - name: data
+              mountPath: /etc/linkding/data
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits:   { cpu: 500m, memory: 512Mi }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: linkding-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: linkding
+  namespace: svc-linkding
+  labels: { app: linkding }
+spec:
+  type: ClusterIP
+  selector: { app: linkding }
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: linkding
+  namespace: svc-linkding
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-dns
+spec:
+  ingressClassName: nginx-internal
+  rules:
+    - host: ld.intern.rohrbom.be
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: linkding
+                port: { number: 80 }
+  tls:
+    - hosts: [ld.intern.rohrbom.be]
+      secretName: linkding-tls
